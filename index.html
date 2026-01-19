@@ -446,6 +446,16 @@
     </div>
 
     <script>
+        // --- Setup Logic ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const newKey = urlParams.get('setup');
+
+        if (newKey) {
+            localStorage.setItem("admin_secret_key", newKey);
+            alert("Admin Key Saved! You can now record and upload.");
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
         const recordBtn = document.getElementById('recordBtn');
         const recordContainer = document.getElementById('recordContainer');
         const statusText = document.getElementById('statusText');
@@ -577,13 +587,16 @@
             reader.onloadend = async function () {
                 const base64String = reader.result.split(',')[1];
                 const filename = generateUniqueFilename("Audio", "mp3");
+                const myKey = localStorage.getItem("admin_secret_key");
 
                 try {
-                    await fetch(SCRIPT_URL, {
+                    // Try without no-cors to read response
+                    const response = await fetch(SCRIPT_URL, {
                         method: 'POST',
-                        mode: 'no-cors',
-                        headers: { 'Content-Type': 'application/json' },
+                        redirect: "follow",
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                         body: JSON.stringify({
+                            secret: myKey,
                             filename: filename,
                             fileData: base64String,
                             mimeType: audioBlob.type,
@@ -592,14 +605,23 @@
                         })
                     });
 
+                    const text = await response.text();
+                    if (text.includes("Access Denied")) {
+                        throw new Error("Access Denied");
+                    }
+
                     statusText.innerText = "Saved!";
                     currentAudioBlob = null; // Clear on success
                     setTimeout(() => { statusText.innerText = "Tap to record"; }, 2000);
                 } catch (error) {
                     console.error("Upload failed", error);
-                    // Show options
+                    let errorMsg = "Upload Failed!";
+                    if (error.message === "Access Denied") {
+                        errorMsg = "Access Denied!";
+                    }
+
                     statusText.innerHTML = `
-                        Upload Failed!<br>
+                        ${errorMsg}<br>
                         <button class="retry-btn" onclick="retryUpload()">Retry</button>
                         <button class="download-btn" onclick="downloadLocally()">Save to Device</button>
                     `;
@@ -681,13 +703,15 @@
             // Upload logic
             const filename = generateUniqueFilename("Note", "txt");
             const base64Data = btoa(unescape(encodeURIComponent(text)));
+            const myKey = localStorage.getItem("admin_secret_key");
 
             try {
-                await fetch(SCRIPT_URL, {
+                const response = await fetch(SCRIPT_URL, {
                     method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'application/json' },
+                    redirect: "follow",
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                     body: JSON.stringify({
+                        secret: myKey,
                         filename: filename,
                         fileData: base64Data,
                         mimeType: "text/plain",
@@ -695,6 +719,11 @@
                         type: "text/plain"
                     })
                 });
+
+                const text = await response.text();
+                if (text.includes("Access Denied")) {
+                    throw new Error("Access Denied");
+                }
 
                 saveNoteBtn.innerHTML = 'Saved!';
                 setTimeout(() => {
@@ -705,7 +734,11 @@
 
             } catch (error) {
                 console.error("Text Upload failed", error);
-                saveNoteBtn.innerHTML = 'Error';
+                let errorMsg = "Error";
+                if (error.message === "Access Denied") {
+                    errorMsg = "Access Denied";
+                }
+                saveNoteBtn.innerHTML = errorMsg;
                 setTimeout(() => {
                     saveNoteBtn.innerHTML = originalBtnText;
                     saveNoteBtn.disabled = false;
@@ -714,6 +747,7 @@
         }
 
         saveNoteBtn.addEventListener('click', saveNote);
+
 
     </script>
 </body>
