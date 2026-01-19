@@ -40,12 +40,13 @@
         .container {
             position: relative;
             width: 100%;
-            max-width: 400px;
+            max-width: 1200px;
             padding: 20px;
-            text-align: center;
             display: flex;
-            flex-direction: column;
-            gap: 20px;
+            flex-direction: row;
+            justify-content: center;
+            align-items: flex-start;
+            gap: 30px;
             box-sizing: border-box;
         }
 
@@ -214,63 +215,21 @@
             }
         }
 
-        /* Mode Switcher */
-        .mode-switcher {
-            display: flex;
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 12px;
-            padding: 4px;
-            margin-bottom: 20px;
-            width: 100%;
-            max-width: 300px;
-            align-self: center;
-        }
-
-        .mode-btn {
+        /* Sections */
+        .audio-section {
             flex: 1;
-            background: transparent;
-            border: none;
-            color: var(--text-color);
-            padding: 10px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            opacity: 0.7;
-        }
-
-        .mode-btn.active {
-            background: var(--primary-color);
-            color: white;
-            opacity: 1;
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
-        }
-
-        /* Mode Sections */
-        .mode-section {
             width: 100%;
+            max-width: 400px;
             display: flex;
             flex-direction: column;
             align-items: center;
-            animation: fadeIn 0.4s ease;
         }
 
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(5px);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .mode-section.hidden {
-            display: none;
+        .notes-section {
+            flex: 2;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
         }
 
         /* Notepad Styling */
@@ -368,33 +327,30 @@
         }
 
         /* Mobile specific adjustments */
+        /* Mobile specific adjustments */
         @media (max-width: 768px) {
-            .notepad-container {
-                position: fixed;
-                top: 0;
-                left: 0;
+            .container {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .audio-section,
+            .notes-section {
+                flex: auto;
+                max-width: 100%;
                 width: 100%;
-                height: 100%;
-                border-radius: 0;
-                z-index: 100;
+            }
+
+            .notepad-container {
+                height: 60vh;
+                position: relative;
+                width: 100%;
+                border-radius: 16px;
+                z-index: 1;
             }
 
             .notepad-header {
-                padding-top: max(20px, env(safe-area-inset-top));
-            }
-
-            body.text-mode-active .container {
-                padding: 0;
-            }
-
-            body.text-mode-active .mode-switcher {
-                position: absolute;
-                bottom: 20px;
-                z-index: 101;
-                left: 50%;
-                transform: translateX(-50%);
-                background: rgba(0, 0, 0, 0.8);
-                width: auto;
+                padding-top: 15px;
             }
         }
 
@@ -450,14 +406,8 @@
 
     <div class="container">
 
-        <!-- Mode Switcher -->
-        <div class="mode-switcher">
-            <button class="mode-btn active" id="btnModeVoice" onclick="switchMode('voice')">Voice Mem</button>
-            <button class="mode-btn" id="btnModeText" onclick="switchMode('text')">Notepad</button>
-        </div>
-
         <!-- VOICE MODE SECTION -->
-        <div id="voiceMode" class="mode-section">
+        <div id="voiceMode" class="audio-section">
             <div class="glass-card">
                 <h1>Voice Recorder</h1>
 
@@ -480,7 +430,7 @@
         </div>
 
         <!-- TEXT MODE SECTION -->
-        <div id="textMode" class="mode-section hidden">
+        <div id="textMode" class="notes-section">
             <div class="notepad-container">
                 <div class="notepad-header">
                     <span class="notepad-title">New Note</span>
@@ -502,26 +452,7 @@
         const silentAudio = document.getElementById('silentAudio');
 
         // Mode Switching
-        const btnModeVoice = document.getElementById('btnModeVoice');
-        const btnModeText = document.getElementById('btnModeText');
-        const voiceModeDiv = document.getElementById('voiceMode');
-        const textModeDiv = document.getElementById('textMode');
-
-        function switchMode(mode) {
-            if (mode === 'voice') {
-                voiceModeDiv.classList.remove('hidden');
-                textModeDiv.classList.add('hidden');
-                btnModeVoice.classList.add('active');
-                btnModeText.classList.remove('active');
-                document.body.classList.remove('text-mode-active');
-            } else {
-                voiceModeDiv.classList.add('hidden');
-                textModeDiv.classList.remove('hidden');
-                btnModeVoice.classList.remove('active');
-                btnModeText.classList.add('active');
-                document.body.classList.add('text-mode-active');
-            }
-        }
+        // Mode Switching Removed
 
         // Text Note Elements
         const notepadInput = document.getElementById('notepadInput');
