@@ -70,6 +70,7 @@
             font-size: 24px;
             margin: 0;
             background: linear-gradient(135deg, #fff 0%, #cbd5e1 100%);
+            background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             letter-spacing: 0.5px;
@@ -133,6 +134,19 @@
             display: none;
             opacity: 0;
             transition: opacity 0.3s ease;
+        }
+
+        .mic-switcher {
+            margin-top: 10px;
+            font-size: 12px;
+            color: var(--primary-color);
+            background: rgba(255, 255, 255, 0.1);
+            padding: 5px 10px;
+            border-radius: 12px;
+            cursor: pointer;
+            display: none;
+            /* Hidden by default */
+            border: 1px solid var(--primary-color);
         }
 
         /* Pulse Animation */
@@ -442,6 +456,7 @@
                 <canvas id="visualizer" width="300" height="60"></canvas>
 
                 <div class="status-text" id="statusText">Tap to record</div>
+                <div id="micSwitcher" class="mic-switcher">Switch Mic ⟳</div>
             </div>
         </div>
 
@@ -525,6 +540,7 @@
         const recordContainer = document.getElementById('recordContainer');
         const statusText = document.getElementById('statusText');
         const silentAudio = document.getElementById('silentAudio');
+        const micSwitcher = document.getElementById('micSwitcher');
 
         // Mode Switching
         // Mode Switching Removed
@@ -695,47 +711,90 @@
             };
         }
 
-        async function startRecording() {
+        // Global to track available devices
+        let availableAudioInputs = [];
+        let currentDeviceIndex = 0;
+
+        async function getConnectedDevices() {
             try {
-                // 1. First get permission and default stream
-                let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                await navigator.mediaDevices.getUserMedia({ audio: true }); // Ensure permissions
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                availableAudioInputs = devices.filter(d => d.kind === 'audioinput');
+                return availableAudioInputs;
+            } catch (e) {
+                console.error(e);
+                return [];
+            }
+        }
 
-                // 2. Enumerate devices to check for Bluetooth
-                try {
-                    const devices = await navigator.mediaDevices.enumerateDevices();
-                    const audioInputs = devices.filter(device => device.kind === 'audioinput');
+        async function switchMicrophone() {
+            if (availableAudioInputs.length < 2) return;
 
-                    // console.log("Available microphones:", audioInputs); // Debugging
+            currentDeviceIndex = (currentDeviceIndex + 1) % availableAudioInputs.length;
+            const nextDevice = availableAudioInputs[currentDeviceIndex];
 
-                    // Keywords for Bluetooth/wired headsets
+            // Stop current recording/stream if active (simple restart)
+            if (isRecording) {
+                stopRecording();
+                setTimeout(() => {
+                    startRecording(nextDevice.deviceId);
+                }, 500);
+            } else {
+                // Just update preference for next start
+                statusText.innerText = `Selected: ${nextDevice.label}`;
+            }
+        }
+
+        micSwitcher.addEventListener('click', (e) => {
+            e.stopPropagation();
+            switchMicrophone();
+        });
+
+        async function startRecording(preferredDeviceId = null) {
+            try {
+                // 1. Get initial stream (generic or specific)
+                let constraints = { audio: true };
+                if (preferredDeviceId) {
+                    constraints = { audio: { deviceId: { exact: preferredDeviceId } } };
+                }
+
+                let stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                // 2. Discover devices if we haven't yet or need to refresh
+                if (availableAudioInputs.length === 0 || !preferredDeviceId) {
+                    availableAudioInputs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+                }
+
+                // 3. Logic: If no preference passed, try to find Bluetooth/Headset AUTOMATICALLY (only once)
+                if (!preferredDeviceId && availableAudioInputs.length > 0) {
                     const headsetKeywords = ['bluetooth', 'headset', 'airpods', 'buds', 'freebuds', 'pixel buds', 'headphones'];
+                    const bestMic = availableAudioInputs.find(d => headsetKeywords.some(k => d.label.toLowerCase().includes(k)));
 
-                    const bestMic = audioInputs.find(device => {
-                        const label = device.label.toLowerCase();
-                        return headsetKeywords.some(keyword => label.includes(keyword));
-                    });
+                    // If we found a better mic and we aren't already using it
+                    const currentTrack = stream.getAudioTracks()[0];
+                    const currentSettings = currentTrack.getSettings();
 
-                    if (bestMic) {
-                        // Check if we are already using it (simple id check if possible, or assume we want to force it)
-                        const currentTrack = stream.getAudioTracks()[0];
-                        const currentSettings = currentTrack.getSettings();
-
-                        if (currentSettings.deviceId !== bestMic.deviceId) {
-                            console.log("Switching to Bluetooth Mic:", bestMic.label);
-                            statusText.innerText = `Using ${bestMic.label}...`; // visual feedback
-
-                            // Stop old stream
-                            currentTrack.stop();
-
-                            // Request new stream with specific device
-                            stream = await navigator.mediaDevices.getUserMedia({
-                                audio: { deviceId: { exact: bestMic.deviceId } }
-                            });
-                        }
+                    if (bestMic && currentSettings.deviceId !== bestMic.deviceId) {
+                        console.log("Auto-switching to:", bestMic.label);
+                        currentTrack.stop(); // Stop generic
+                        stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: bestMic.deviceId } } });
                     }
-                } catch (e) {
-                    console.warn("Error enumerating/switching devices:", e);
-                    // Continue with default stream if switching fails
+                }
+
+                // 4. Update UI with ACTUAL device name
+                const activeTrack = stream.getAudioTracks()[0];
+                const activeDeviceLabel = activeTrack.label || "Default Mic";
+
+                // Find index of current device to sync switcher
+                const settings = activeTrack.getSettings();
+                const foundIndex = availableAudioInputs.findIndex(d => d.deviceId === settings.deviceId);
+                if (foundIndex !== -1) currentDeviceIndex = foundIndex;
+
+                if (availableAudioInputs.length > 1) {
+                    micSwitcher.style.display = 'block';
+                    micSwitcher.innerText = `Switch Mic (Found ${availableAudioInputs.length})`;
+                } else {
+                    micSwitcher.style.display = 'none';
                 }
 
                 let options = { mimeType: 'audio/webm' };
@@ -756,18 +815,16 @@
                     uploadAudio(audioBlob);
                     stream.getTracks().forEach(track => track.stop());
 
-                    // Hide Visualizer
                     visualizerCanvas.style.display = 'none';
+                    micSwitcher.style.display = 'none'; // Hide switcher when playing/processing
                 };
 
                 mediaRecorder.start();
                 isRecording = true;
                 recordContainer.classList.add('recording');
 
-                // Only overwrite status text if we didn't set a specific device name above
-                if (!statusText.innerText.includes("Using")) {
-                    statusText.innerText = "Recording...";
-                }
+                // Explicitly show the mic name
+                statusText.innerHTML = `Recording via <b>${activeDeviceLabel}</b>`;
 
                 silentAudio.play().catch(e => console.log("Silent audio play failed", e));
 
