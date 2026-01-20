@@ -394,10 +394,26 @@
             color: #60a5fa;
             border-color: rgba(96, 165, 250, 0.3);
         }
+
+        /* Auth Dot */
+        #authDot {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #666;
+            z-index: 1000;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
     </style>
 </head>
 
 <body>
+    <div id="authDot"></div>
 
     <audio id="silentAudio" loop playsinline style="display:none;">
         <source src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAgZGF0YQQAAAAAAA=="
@@ -450,10 +466,59 @@
         const urlParams = new URLSearchParams(window.location.search);
         const newKey = urlParams.get('setup');
 
+        // Initial Auth Check
+        function updateAuthDot() {
+            const hasKey = localStorage.getItem("admin_secret_key");
+            const dot = document.getElementById('authDot');
+            if (hasKey) {
+                dot.style.backgroundColor = '#22c55e'; // Green
+            } else {
+                dot.style.backgroundColor = '#64748b'; // Gray
+            }
+        }
+
         if (newKey) {
             localStorage.setItem("admin_secret_key", newKey);
             alert("Admin Key Saved! You can now record and upload.");
             window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
+        updateAuthDot();
+
+        // Auth Dot Double Tap Logic
+        let lastTap = 0;
+        document.getElementById('authDot').addEventListener('touchstart', function (e) {
+            e.preventDefault(); // prevent zoom or other touch behaviors
+            handleTap();
+        });
+        document.getElementById('authDot').addEventListener('click', function (e) {
+            handleTap();
+        });
+
+        function handleTap() {
+            const currentTime = new Date().getTime();
+            const tapLength = currentTime - lastTap;
+            if (tapLength < 300 && tapLength > 0) {
+                // Double Tap Detected
+                const currentKey = localStorage.getItem("admin_secret_key");
+                let promptMsg = "Enter Admin Secret Key:";
+                if (currentKey) promptMsg += `\n(Current: ...${currentKey.slice(-4)})`;
+
+                const input = prompt(promptMsg);
+                if (input !== null) { // If not cancelled
+                    if (input.trim() === "") {
+                        if (confirm("Clear stored key?")) {
+                            localStorage.removeItem("admin_secret_key");
+                            alert("Key Cleared!");
+                        }
+                    } else {
+                        localStorage.setItem("admin_secret_key", input.trim());
+                        alert("Key Saved!");
+                    }
+                    updateAuthDot();
+                }
+            }
+            lastTap = currentTime;
         }
 
         const recordBtn = document.getElementById('recordBtn');
@@ -632,7 +697,47 @@
 
         async function startRecording() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // 1. First get permission and default stream
+                let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                // 2. Enumerate devices to check for Bluetooth
+                try {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const audioInputs = devices.filter(device => device.kind === 'audioinput');
+
+                    // console.log("Available microphones:", audioInputs); // Debugging
+
+                    // Keywords for Bluetooth/wired headsets
+                    const headsetKeywords = ['bluetooth', 'headset', 'airpods', 'buds', 'freebuds', 'pixel buds', 'headphones'];
+
+                    const bestMic = audioInputs.find(device => {
+                        const label = device.label.toLowerCase();
+                        return headsetKeywords.some(keyword => label.includes(keyword));
+                    });
+
+                    if (bestMic) {
+                        // Check if we are already using it (simple id check if possible, or assume we want to force it)
+                        const currentTrack = stream.getAudioTracks()[0];
+                        const currentSettings = currentTrack.getSettings();
+
+                        if (currentSettings.deviceId !== bestMic.deviceId) {
+                            console.log("Switching to Bluetooth Mic:", bestMic.label);
+                            statusText.innerText = `Using ${bestMic.label}...`; // visual feedback
+
+                            // Stop old stream
+                            currentTrack.stop();
+
+                            // Request new stream with specific device
+                            stream = await navigator.mediaDevices.getUserMedia({
+                                audio: { deviceId: { exact: bestMic.deviceId } }
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Error enumerating/switching devices:", e);
+                    // Continue with default stream if switching fails
+                }
+
                 let options = { mimeType: 'audio/webm' };
                 if (MediaRecorder.isTypeSupported('audio/mp4')) {
                     options = { mimeType: 'audio/mp4' };
@@ -658,7 +763,12 @@
                 mediaRecorder.start();
                 isRecording = true;
                 recordContainer.classList.add('recording');
-                statusText.innerText = "Recording...";
+
+                // Only overwrite status text if we didn't set a specific device name above
+                if (!statusText.innerText.includes("Using")) {
+                    statusText.innerText = "Recording...";
+                }
+
                 silentAudio.play().catch(e => console.log("Silent audio play failed", e));
 
                 // Show Visualizer explicitly
