@@ -542,29 +542,280 @@
         const silentAudio = document.getElementById('silentAudio');
         const micSwitcher = document.getElementById('micSwitcher');
 
-        // Mode Switching
-        // Mode Switching Removed
-
-        // Text Note Elements
         const notepadInput = document.getElementById('notepadInput');
         const saveNoteBtn = document.getElementById('saveNoteBtn');
 
-        let mediaRecorder;
+        // Global to track available devices
+        let availableAudioInputs = [];
+        let currentDeviceIndex = 0;
+        let selectedDeviceId = null; // Store user preference
+
+        // Web Audio Globals
+        let audioContext = null;
+        let mediaStreamDestination = null;
+        let currentSourceNode = null;
+
+        // Recorder Globals
+        let mediaRecorder = null;
         let audioChunks = [];
         let isRecording = false;
-        let currentAudioBlob = null; // for fail-safe
+        let recordingStream = null; // The stream being recorded (from destination)
 
-        // Visualizer Vars
-        let audioContext;
-        let analyser;
-        let source;
+        let analyser = null;
         let animationId;
+        let currentAudioBlob = null;
+
+        // Visualizer Canvas
         const visualizerCanvas = document.getElementById('visualizer');
         const canvasCtx = visualizerCanvas.getContext('2d');
-
         const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzF_gTJ2m0YEtJ6kHO8EiGMeSYtquPt7g0m3-IOPW5hD-cXkxmsZLkR1eDpCjVQWsXV/exec";
 
-        // --- Utils ---
+
+        // Initialize on load
+        window.addEventListener('load', async () => {
+            try {
+                // Check if we can list devices without prompt
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const hasAudio = devices.some(d => d.kind === 'audioinput' && d.label);
+                if (hasAudio) {
+                    await refreshDeviceList();
+                    updateStatusText();
+                }
+            } catch (e) {
+                console.log("Initial device check failed", e);
+            }
+        });
+
+        async function refreshDeviceList() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                availableAudioInputs = devices.filter(d => d.kind === 'audioinput');
+
+                // Show/Hide Switcher based on count
+                if (availableAudioInputs.length > 1) {
+                    micSwitcher.style.display = 'block';
+                    micSwitcher.innerText = `Switch Mic (Found ${availableAudioInputs.length})`;
+                } else {
+                    micSwitcher.style.display = 'none';
+                }
+                return availableAudioInputs;
+            } catch (e) {
+                return [];
+            }
+        }
+
+        async function initAudioEngine() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                mediaStreamDestination = audioContext.createMediaStreamDestination();
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 64;
+            }
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+        }
+
+        async function connectInputToEngine(stream) {
+            // 1. Disconnect old source if exists
+            if (currentSourceNode) {
+                currentSourceNode.disconnect();
+            }
+
+            // 2. Create new source
+            currentSourceNode = audioContext.createMediaStreamSource(stream);
+
+            // 3. Connect: Source -> Analyser (Visualizer) -> Destination (Recorder)
+            currentSourceNode.connect(analyser);
+            analyser.connect(mediaStreamDestination);
+        }
+
+        async function switchMicrophone() {
+            await refreshDeviceList();
+            if (availableAudioInputs.length < 2) return;
+
+            currentDeviceIndex = (currentDeviceIndex + 1) % availableAudioInputs.length;
+            const nextDevice = availableAudioInputs[currentDeviceIndex];
+            selectedDeviceId = nextDevice.deviceId;
+
+            if (isRecording) {
+                statusText.innerHTML = `Switching to <b>${nextDevice.label}</b>...`;
+
+                // Hot-swap logic
+                try {
+                    const newStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: selectedDeviceId } } });
+                    await connectInputToEngine(newStream);
+                    statusText.innerHTML = `Recording via <b>${nextDevice.label}</b>`;
+                } catch (e) {
+                    console.error("Hot-swap failed", e);
+                    statusText.innerText = "Switch failed! Continuing...";
+                }
+            } else {
+                // Idle switch
+                updateStatusText(nextDevice.label);
+            }
+        }
+
+        function updateStatusText(labelOverride = null) {
+            if (isRecording) return; // Don't overwrite if recording
+
+            if (labelOverride) {
+                statusText.innerHTML = `Ready: <b>${labelOverride}</b>`;
+            } else if (availableAudioInputs.length > 0) {
+                const dev = selectedDeviceId ? availableAudioInputs.find(d => d.deviceId === selectedDeviceId) : availableAudioInputs[0];
+                const label = dev ? dev.label : "Default Mic";
+                statusText.innerHTML = `Ready: <b>${label}</b>`;
+            } else {
+                statusText.innerText = "Tap to record";
+            }
+        }
+
+        micSwitcher.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (availableAudioInputs.length === 0 || availableAudioInputs[0].label === "") {
+                navigator.mediaDevices.getUserMedia({ audio: true }).then(s => {
+                    s.getTracks().forEach(t => t.stop()); // Just to get permission
+                    refreshDeviceList().then(() => switchMicrophone());
+                }).catch(e => alert("Mic permission needed to switch"));
+            } else {
+                switchMicrophone();
+            }
+        });
+
+        async function startRecording() {
+            try {
+                statusText.innerText = "Starting...";
+                await initAudioEngine();
+
+                // 1. Determine Device ID
+                let constraints = { audio: true };
+                // Use stored selection or default
+                const finalDeviceId = selectedDeviceId;
+                if (finalDeviceId) {
+                    constraints = { audio: { deviceId: { exact: finalDeviceId } } };
+                }
+
+                // 2. Get Input Stream
+                let inputStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                // 3. Connect to Audio Graph
+                await connectInputToEngine(inputStream);
+
+                // 4. Auto-Detect Bluetooth (if first run / no selection)
+                if (!selectedDeviceId) {
+                    await refreshDeviceList();
+                    const headsetKeywords = ['bluetooth', 'headset', 'airpods', 'buds', 'freebuds', 'pixel buds', 'headphones'];
+                    const bestMic = availableAudioInputs.find(d => headsetKeywords.some(k => d.label.toLowerCase().includes(k)));
+
+                    if (bestMic) {
+                        const currentInputTrack = inputStream.getAudioTracks()[0];
+                        if (currentInputTrack.getSettings().deviceId !== bestMic.deviceId) {
+                            console.log("Auto-switching to:", bestMic.label);
+                            // Stop generic, get specific
+                            currentInputTrack.stop();
+                            inputStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: bestMic.deviceId } } });
+                            await connectInputToEngine(inputStream); // Reconnect
+                            selectedDeviceId = bestMic.deviceId;
+                        }
+                    }
+                }
+
+                // Update Index/UI
+                if (selectedDeviceId) {
+                    const foundIndex = availableAudioInputs.findIndex(d => d.deviceId === selectedDeviceId);
+                    if (foundIndex !== -1) currentDeviceIndex = foundIndex;
+                }
+
+                // 5. Start Recorder on DESTINATION Stream (Mixed/Processed Audio)
+                recordingStream = mediaStreamDestination.stream;
+
+                let options = { mimeType: 'audio/webm' };
+                if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                    options = { mimeType: 'audio/mp4' };
+                }
+
+                mediaRecorder = new MediaRecorder(recordingStream, options);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    if (animationId) cancelAnimationFrame(animationId);
+
+                    const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+                    uploadAudio(audioBlob);
+
+                    if (currentSourceNode && currentSourceNode.mediaStream) {
+                        currentSourceNode.mediaStream.getTracks().forEach(t => t.stop());
+                    }
+                    if (recordingStream) recordingStream.getTracks().forEach(t => t.stop());
+
+                    visualizerCanvas.style.display = 'none';
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                recordContainer.classList.add('recording');
+
+                // UI
+                const activeLabel = availableAudioInputs.find(d => d.deviceId === selectedDeviceId)?.label || "Default Mic";
+                statusText.innerHTML = `Recording via <b>${activeLabel}</b>`;
+
+                silentAudio.play().catch(e => console.log("Silent audio play failed", e));
+                visualizerCanvas.style.display = 'block';
+                drawVisualizer();
+
+            } catch (err) {
+                console.error("Start Error:", err);
+                statusText.innerText = "Error: " + err.message;
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                isRecording = false;
+                recordContainer.classList.remove('recording');
+                statusText.innerText = "Processing...";
+                silentAudio.pause();
+                silentAudio.currentTime = 0;
+            }
+        }
+
+        recordBtn.addEventListener('click', () => {
+            if (!isRecording) {
+                startRecording();
+            } else {
+                stopRecording();
+            }
+        });
+
+        // --- Visualizer Logic ---
+        function drawVisualizer() {
+            if (!isRecording) return;
+            animationId = requestAnimationFrame(drawVisualizer);
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+
+            canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
+
+            const barWidth = (visualizerCanvas.width / bufferLength) - 2;
+            let barHeight;
+            let x = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                barHeight = dataArray[i] / 2;
+                canvasCtx.fillStyle = `rgba(255, 59, 48, ${barHeight / 150 + 0.5})`;
+                canvasCtx.fillRect(x, (visualizerCanvas.height - barHeight) / 2, barWidth, barHeight);
+                x += barWidth + 2;
+            }
+        }
+
+        // --- Utils, Upload, Notes (Legacy/Original Logic) ---
 
         function generateUniqueFilename(prefix, extension) {
             const now = new Date();
@@ -581,54 +832,6 @@
             return window.innerWidth <= 768;
         }
 
-        // --- Visualizer Logic ---
-
-        function setupVisualizer(stream) {
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (audioContext.state === 'suspended') {
-                audioContext.resume();
-            }
-
-            analyser = audioContext.createAnalyser();
-            source = audioContext.createMediaStreamSource(stream);
-            source.connect(analyser);
-
-            analyser.fftSize = 64; // Fewer bars for wider style
-            const bufferLength = analyser.frequencyBinCount;
-            const dataArray = new Uint8Array(bufferLength);
-
-            function draw() {
-                if (!isRecording) return;
-                animationId = requestAnimationFrame(draw);
-
-                analyser.getByteFrequencyData(dataArray);
-
-                canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
-
-                // Draw bars
-                const barWidth = (visualizerCanvas.width / bufferLength) - 2;
-                let barHeight;
-                let x = 0;
-
-                for (let i = 0; i < bufferLength; i++) {
-                    barHeight = dataArray[i] / 2; // Scale height
-
-                    // Use red color to match Voice Memos
-                    canvasCtx.fillStyle = `rgba(255, 59, 48, ${barHeight / 150 + 0.5})`;
-
-                    // Center the bar vertically
-                    canvasCtx.fillRect(x, (visualizerCanvas.height - barHeight) / 2, barWidth, barHeight);
-
-                    x += barWidth + 2;
-                }
-            }
-            draw();
-        }
-
-        // --- Fail Safe Logic ---
-
         window.retryUpload = function () {
             if (currentAudioBlob) {
                 uploadAudio(currentAudioBlob);
@@ -641,37 +844,27 @@
             const a = document.createElement('a');
             a.style.display = 'none';
             a.href = url;
-
-            // Guess extension
             let ext = "webm";
             if (currentAudioBlob.type.includes("mp4")) ext = "mp4";
             else if (currentAudioBlob.type.includes("mp3")) ext = "mp3";
-
             a.download = generateUniqueFilename("Audio_Saved", ext);
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(url);
-
             statusText.innerText = "Saved to Device!";
             setTimeout(() => { statusText.innerText = "Tap to record"; }, 2000);
         };
 
-        // --- Audio Recording Logic ---
-
         async function uploadAudio(audioBlob) {
-            currentAudioBlob = audioBlob; // Save for fail-safe
+            currentAudioBlob = audioBlob;
             statusText.innerHTML = '<span class="loader"></span> Uploading...';
-
             const reader = new FileReader();
             reader.readAsDataURL(audioBlob);
-
             reader.onloadend = async function () {
                 const base64String = reader.result.split(',')[1];
                 const filename = generateUniqueFilename("Audio", "mp3");
                 const myKey = localStorage.getItem("admin_secret_key");
-
                 try {
-                    // Try without no-cors to read response
                     const response = await fetch(SCRIPT_URL, {
                         method: 'POST',
                         redirect: "follow",
@@ -685,193 +878,29 @@
                             type: audioBlob.type
                         })
                     });
-
                     const text = await response.text();
-                    if (text.includes("Access Denied")) {
-                        throw new Error("Access Denied");
-                    }
-
+                    if (text.includes("Access Denied")) throw new Error("Access Denied");
                     statusText.innerText = "Saved!";
-                    currentAudioBlob = null; // Clear on success
-                    setTimeout(() => { statusText.innerText = "Tap to record"; }, 2000);
+                    currentAudioBlob = null;
+                    setTimeout(() => { if (!isRecording) updateStatusText(); }, 2000);
                 } catch (error) {
                     console.error("Upload failed", error);
                     let errorMsg = "Upload Failed!";
-                    if (error.message === "Access Denied") {
-                        errorMsg = "Access Denied!";
-                    }
-
-                    statusText.innerHTML = `
-                        ${errorMsg}<br>
-                        <button class="retry-btn" onclick="retryUpload()">Retry</button>
-                        <button class="download-btn" onclick="downloadLocally()">Save to Device</button>
-                    `;
-                    // Do NOT auto-clear status
+                    if (error.message === "Access Denied") errorMsg = "Access Denied!";
+                    statusText.innerHTML = `${errorMsg}<br><button class="retry-btn" onclick="retryUpload()">Retry</button><button class="download-btn" onclick="downloadLocally()">Save to Device</button>`;
                 }
             };
         }
 
-        // Global to track available devices
-        let availableAudioInputs = [];
-        let currentDeviceIndex = 0;
-
-        async function getConnectedDevices() {
-            try {
-                await navigator.mediaDevices.getUserMedia({ audio: true }); // Ensure permissions
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                availableAudioInputs = devices.filter(d => d.kind === 'audioinput');
-                return availableAudioInputs;
-            } catch (e) {
-                console.error(e);
-                return [];
-            }
-        }
-
-        async function switchMicrophone() {
-            if (availableAudioInputs.length < 2) return;
-
-            currentDeviceIndex = (currentDeviceIndex + 1) % availableAudioInputs.length;
-            const nextDevice = availableAudioInputs[currentDeviceIndex];
-
-            // Stop current recording/stream if active (simple restart)
-            if (isRecording) {
-                stopRecording();
-                setTimeout(() => {
-                    startRecording(nextDevice.deviceId);
-                }, 500);
-            } else {
-                // Just update preference for next start
-                statusText.innerText = `Selected: ${nextDevice.label}`;
-            }
-        }
-
-        micSwitcher.addEventListener('click', (e) => {
-            e.stopPropagation();
-            switchMicrophone();
-        });
-
-        async function startRecording(preferredDeviceId = null) {
-            try {
-                // 1. Get initial stream (generic or specific)
-                let constraints = { audio: true };
-                if (preferredDeviceId) {
-                    constraints = { audio: { deviceId: { exact: preferredDeviceId } } };
-                }
-
-                let stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-                // 2. Discover devices if we haven't yet or need to refresh
-                if (availableAudioInputs.length === 0 || !preferredDeviceId) {
-                    availableAudioInputs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
-                }
-
-                // 3. Logic: If no preference passed, try to find Bluetooth/Headset AUTOMATICALLY (only once)
-                if (!preferredDeviceId && availableAudioInputs.length > 0) {
-                    const headsetKeywords = ['bluetooth', 'headset', 'airpods', 'buds', 'freebuds', 'pixel buds', 'headphones'];
-                    const bestMic = availableAudioInputs.find(d => headsetKeywords.some(k => d.label.toLowerCase().includes(k)));
-
-                    // If we found a better mic and we aren't already using it
-                    const currentTrack = stream.getAudioTracks()[0];
-                    const currentSettings = currentTrack.getSettings();
-
-                    if (bestMic && currentSettings.deviceId !== bestMic.deviceId) {
-                        console.log("Auto-switching to:", bestMic.label);
-                        currentTrack.stop(); // Stop generic
-                        stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: bestMic.deviceId } } });
-                    }
-                }
-
-                // 4. Update UI with ACTUAL device name
-                const activeTrack = stream.getAudioTracks()[0];
-                const activeDeviceLabel = activeTrack.label || "Default Mic";
-
-                // Find index of current device to sync switcher
-                const settings = activeTrack.getSettings();
-                const foundIndex = availableAudioInputs.findIndex(d => d.deviceId === settings.deviceId);
-                if (foundIndex !== -1) currentDeviceIndex = foundIndex;
-
-                if (availableAudioInputs.length > 1) {
-                    micSwitcher.style.display = 'block';
-                    micSwitcher.innerText = `Switch Mic (Found ${availableAudioInputs.length})`;
-                } else {
-                    micSwitcher.style.display = 'none';
-                }
-
-                let options = { mimeType: 'audio/webm' };
-                if (MediaRecorder.isTypeSupported('audio/mp4')) {
-                    options = { mimeType: 'audio/mp4' };
-                }
-
-                mediaRecorder = new MediaRecorder(stream, options);
-                audioChunks = [];
-
-                mediaRecorder.ondataavailable = event => {
-                    audioChunks.push(event.data);
-                };
-
-                mediaRecorder.onstop = () => {
-                    cancelAnimationFrame(animationId);
-                    const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
-                    uploadAudio(audioBlob);
-                    stream.getTracks().forEach(track => track.stop());
-
-                    visualizerCanvas.style.display = 'none';
-                    micSwitcher.style.display = 'none'; // Hide switcher when playing/processing
-                };
-
-                mediaRecorder.start();
-                isRecording = true;
-                recordContainer.classList.add('recording');
-
-                // Explicitly show the mic name
-                statusText.innerHTML = `Recording via <b>${activeDeviceLabel}</b>`;
-
-                silentAudio.play().catch(e => console.log("Silent audio play failed", e));
-
-                // Show Visualizer explicitly
-                visualizerCanvas.style.display = 'block';
-                setupVisualizer(stream);
-            } catch (err) {
-                console.error("Error accessing microphone:", err);
-                statusText.innerText = "Mic access denied";
-            }
-        }
-
-        function stopRecording() {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
-                isRecording = false;
-                recordContainer.classList.remove('recording');
-                statusText.innerText = "Processing...";
-                silentAudio.pause();
-                silentAudio.currentTime = 0;
-            }
-            // display:none is handled in onstop to ensure stream flows till the end
-        }
-
-        recordBtn.addEventListener('click', () => {
-            if (!isRecording) {
-                startRecording();
-            } else {
-                stopRecording();
-            }
-        });
-
-        // --- Text Note Logic ---
-
         async function saveNote() {
             const text = notepadInput.value.trim();
             if (!text) return;
-
             const originalBtnText = saveNoteBtn.innerHTML;
             saveNoteBtn.innerHTML = '<span class="loader" style="width:14px;height:14px;border-width:2px;"></span> Saving...';
             saveNoteBtn.disabled = true;
-
-            // Upload logic
             const filename = generateUniqueFilename("Note", "txt");
             const base64Data = btoa(unescape(encodeURIComponent(text)));
             const myKey = localStorage.getItem("admin_secret_key");
-
             try {
                 const response = await fetch(SCRIPT_URL, {
                     method: 'POST',
@@ -886,25 +915,18 @@
                         type: "text/plain"
                     })
                 });
-
                 const text = await response.text();
-                if (text.includes("Access Denied")) {
-                    throw new Error("Access Denied");
-                }
-
+                if (text.includes("Access Denied")) throw new Error("Access Denied");
                 saveNoteBtn.innerHTML = 'Saved!';
                 setTimeout(() => {
                     saveNoteBtn.innerHTML = originalBtnText;
                     saveNoteBtn.disabled = false;
-                    notepadInput.value = ''; // Clear because sent
+                    notepadInput.value = '';
                 }, 2000);
-
             } catch (error) {
                 console.error("Text Upload failed", error);
                 let errorMsg = "Error";
-                if (error.message === "Access Denied") {
-                    errorMsg = "Access Denied";
-                }
+                if (error.message === "Access Denied") errorMsg = "Access Denied";
                 saveNoteBtn.innerHTML = errorMsg;
                 setTimeout(() => {
                     saveNoteBtn.innerHTML = originalBtnText;
@@ -912,9 +934,7 @@
                 }, 2000);
             }
         }
-
         saveNoteBtn.addEventListener('click', saveNote);
-
 
     </script>
 </body>
